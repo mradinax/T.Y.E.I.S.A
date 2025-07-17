@@ -37,7 +37,7 @@ dependencies:
   flutter_tts: ^4.0.2
   speech_to_text: 7.1.0
   flutter_blue_plus: ^1.35.5
-  # http: ^1.2.1 # Uncomment when making API calls
+  http: ^1.2.1 # Uncomment when making API calls
 
 dev_dependencies:
   flutter_test:

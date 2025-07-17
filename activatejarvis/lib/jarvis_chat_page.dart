@@ -4,6 +4,8 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 // import 'package:http/http.dart' as http; // For DeepSeek API
+import 'package:activatejarvis/voice_chat_page.dart';
+import 'dart:io';
 
 class JarvisChatPage extends StatefulWidget {
   final String userName;
@@ -63,7 +65,29 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       _devicesList.clear();
     });
 
-    // Start scanning
+    // 1. Check Android system audio connection using native plugin
+    bool systemAudioConnected = false;
+    if (Platform.isAndroid) {
+      systemAudioConnected = await VoiceChatPage.isBluetoothAudioConnected();
+    }
+
+    if (systemAudioConnected) {
+      setState(() {
+        _isConnected = true;
+        _isConnecting = false;
+      });
+      await _speak('Audio device already connected. Hey there, Jarvis here');
+      // Navigate to VoiceChatPage
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const VoiceChatPage()),
+        );
+      }
+      return;
+    }
+
+    // 2. Fallback: BLE scan and device selection as before
     await FlutterBluePlus.startScan(timeout: const Duration(seconds: 5));
     _scanSubscription = FlutterBluePlus.scanResults.listen((results) async {
       for (var scanResult in results) {
@@ -106,11 +130,26 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
         _isConnecting = false;
       });
       await _speak('Hey there, Jarvis here');
-      _startListening();
+      // Navigate to VoiceChatPage
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (context) => const VoiceChatPage()),
+        );
+      }
     } else {
       setState(() {
         _isConnecting = false;
       });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Please connect your earbuds or audio device via system Bluetooth first.'),
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+      return;
     }
   }
 
