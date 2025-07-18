@@ -5,7 +5,7 @@ import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
-import 'package:activatejarvis/secrets/api_keys.dart';
+// Removed: import 'package:activatejarvis/secrets/api_keys.dart';
 
 class VoiceChatPage extends StatefulWidget {
   final VoidCallback? onBack;
@@ -35,6 +35,9 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
   String _lastWords = '';
   List<Map<String, String>> _messages = [];
   BluetoothDevice? _connectedDevice;
+  static const String _geminiApiKey = 'AIzaSyDAewJYdhHUFOZg9CnuDPYoASR_l2gbOBk';
+  bool _processingSpeech = false;
+  bool _hasGreeted = false;
 
   @override
   void initState() {
@@ -54,11 +57,13 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
 
   void _startListening() async {
     bool available = await _speech.initialize(
-      onStatus: (val) {
+      onStatus: (val) async {
         if (val == 'done' || val == 'notListening') {
           setState(() => _isListening = false);
-          if (_lastWords.isNotEmpty) {
-            _handleUserSpeech(_lastWords);
+          if (_lastWords.isNotEmpty && !_processingSpeech) {
+            _processingSpeech = true;
+            await _handleUserSpeech(_lastWords);
+            _processingSpeech = false;
           }
         }
       },
@@ -84,46 +89,73 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
     });
     String assistantReply;
     try {
-      assistantReply = await _callGptApi(userText);
+      assistantReply = await _callGeminiApi(userText, isFirst: !_hasGreeted);
     } catch (e) {
       assistantReply = 'Sorry, I could not process your request.\nError: '
         + e.toString();
+    }
+    if (!_hasGreeted) {
+      _hasGreeted = true;
     }
     setState(() {
       _messages.add({'role': 'assistant', 'text': assistantReply});
     });
     await _flutterTts.setLanguage('en-US');
     await _flutterTts.setPitch(1.0);
+    // Always stop listening before TTS
+    if (_isListening) {
+      await _speech.stop();
+      setState(() => _isListening = false);
+    }
+    // Set TTS completion handler to restart listening
+    _flutterTts.setCompletionHandler(() async {
+      await Future.delayed(const Duration(milliseconds: 200)); // Small delay for stability
+      _startListening();
+    });
     await _flutterTts.speak(assistantReply);
     if (_connectedDevice != null) {
-      // Send the GPT response as text via Bluetooth (if supported by the device)
+      // Send the response as text via Bluetooth (if supported by the device)
       // This is a placeholder: actual sending depends on the device's services/characteristics
       // await _sendTextViaBluetooth(assistantReply);
     }
     _lastWords = '';
-    _startListening(); // Always restart listening, even on error
+    // Do not call _startListening() here; it will be called after TTS completes
   }
 
-  Future<String> _callGptApi(String prompt) async {
-    final url = Uri.parse('https://api.openai.com/v1/chat/completions');
+  Future<String> _callGeminiApi(String prompt, {bool isFirst = false}) async {
+    final url = Uri.parse('https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-001:generateContent?key=$_geminiApiKey');
     final headers = {
       'Content-Type': 'application/json',
-      'Authorization': 'Bearer $openAIApiKey',
     };
+    final String systemPrompt = isFirst
+        ? "You are Jarvis, Tony Stark's AI. You speak casually, confidently, and with personality. The first time you respond in a session, start with 'Hey boss' or something similar. After that, skip greetings and just reply directly. Never repeat the same intro. Be witty and natural. Reply in only one short sentence."
+        : "You are Jarvis, Tony Stark's AI. You speak casually, confidently, and with personality. Do not greet or introduce yourself, just reply directly. Never repeat the same intro. Be witty and natural. Reply in only one short sentence.";
     final body = jsonEncode({
-      'model': 'gpt-3.5-turbo',
-      'messages': [
-        {'role': 'system', 'content': 'You are Jarvis, a helpful assistant.'},
-        ..._messages.map((m) => {'role': m['role'], 'content': m['text']}),
-        {'role': 'user', 'content': prompt},
+      'contents': [
+        {
+          'parts': [
+            {'text': systemPrompt},
+            {'text': prompt}
+          ]
+        }
       ],
-      'max_tokens': 150,
+      'generationConfig': {
+        'maxOutputTokens': 15
+      }
     });
     try {
       final response = await http.post(url, headers: headers, body: body);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        return data['choices'][0]['message']['content'].trim();
+        // Gemini's response structure
+        final candidates = data['candidates'];
+        if (candidates != null && candidates.length > 0) {
+          final content = candidates[0]['content'];
+          if (content != null && content['parts'] != null && content['parts'].length > 0) {
+            return content['parts'][0]['text']?.trim() ?? '';
+          }
+        }
+        return 'No response from Gemini.';
       } else {
         throw Exception('HTTP ${response.statusCode}: ${response.body}');
       }
@@ -195,10 +227,13 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
             padding: const EdgeInsets.symmetric(vertical: 24),
             child: Column(
               children: [
-                Image.asset(
-                  'assets/jarvis.gif',
-                  width: size.width * 0.6,
-                  fit: BoxFit.contain,
+                GestureDetector(
+                  onTap: _startListening,
+                  child: Image.asset(
+                    'assets/jarvis.gif',
+                    width: size.width * 0.6,
+                    fit: BoxFit.contain,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Text(

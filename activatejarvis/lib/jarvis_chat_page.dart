@@ -228,6 +228,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
+        // Removed leading back button
         actions: [
           IconButton(
             icon: const Icon(Icons.settings, color: Colors.white),
