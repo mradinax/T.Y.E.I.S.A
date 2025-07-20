@@ -4,7 +4,9 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'dart:convert';
+import 'dart:async';
 import 'package:http/http.dart' as http;
+import 'package:siri_wave/siri_wave.dart';
 // Removed: import 'package:activatejarvis/secrets/api_keys.dart';
 
 class VoiceChatPage extends StatefulWidget {
@@ -38,12 +40,100 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
   static const String _geminiApiKey = 'AIzaSyDAewJYdhHUFOZg9CnuDPYoASR_l2gbOBk';
   bool _processingSpeech = false;
   bool _hasGreeted = false;
+  
+  // Wake word and Bluetooth features
+  String _assistantName = "jarvis";  // Default assistant name
+  bool _isBluetoothConnected = false;
 
   @override
   void initState() {
     super.initState();
-    _startListening();
+    _initializeTTS();
+    _checkBluetoothConnection();
     _findConnectedBluetoothDevice();
+    _startListening();
+    // Periodically check Bluetooth connection
+    _startBluetoothMonitoring();
+  }
+
+  void _startBluetoothMonitoring() {
+    // Check Bluetooth connection every 10 seconds
+    Timer.periodic(const Duration(seconds: 10), (timer) {
+      if (mounted) {
+        _checkBluetoothConnection();
+      } else {
+        timer.cancel();
+      }
+    });
+  }
+
+  Future<void> _initializeTTS() async {
+    // Check Bluetooth connection and configure TTS accordingly
+    bool bluetoothConnected = await VoiceChatPage.isBluetoothAudioConnected();
+    setState(() {
+      _isBluetoothConnected = bluetoothConnected;
+    });
+    
+    if (!bluetoothConnected) {
+      // Configure TTS for phone speaker
+      await _flutterTts.setSpeechRate(0.4);
+      await _flutterTts.setVolume(1.0);
+      await _flutterTts.setPitch(0.8);
+      await _flutterTts.setLanguage('en-US');
+    }
+  }
+
+  Future<void> _checkBluetoothConnection() async {
+    bool connected = await VoiceChatPage.isBluetoothAudioConnected();
+    setState(() {
+      _isBluetoothConnected = connected;
+    });
+  }
+
+  String _processWakeWords(String text) {
+    // Remove common punctuation and normalize text
+    String normalizedText = text.replaceAll(RegExp(r'[.,!?]'), '').trim();
+    
+    // Check for wake word patterns
+    List<String> wakePatterns = [
+      'activate $_assistantName',
+      'activate$_assistantName',
+      '$_assistantName',
+      'hey $_assistantName',
+      'ok $_assistantName',
+    ];
+    
+    for (String pattern in wakePatterns) {
+      if (normalizedText.startsWith(pattern)) {
+        // Remove the wake word and return the command
+        String command = normalizedText.substring(pattern.length).trim();
+        if (command.isEmpty && normalizedText == pattern) {
+          // Just the wake word, return a generic greeting trigger
+          return "hello";
+        }
+        return command.isEmpty ? "hello" : command;
+      }
+    }
+    
+    // If no wake word found, return empty string
+    return '';
+  }
+
+  Future<void> _configureTTSOutput() async {
+    await _flutterTts.setLanguage('en-US');
+    await _flutterTts.setPitch(0.8);
+    
+    if (_isBluetoothConnected) {
+      // Configure for Bluetooth audio
+      await _flutterTts.setSpeechRate(0.4);
+      await _flutterTts.setVolume(0.8);
+      print('TTS configured for Bluetooth output');
+    } else {
+      // Configure for phone speaker
+      await _flutterTts.setSpeechRate(0.5);
+      await _flutterTts.setVolume(1.0);
+      print('TTS configured for phone speaker output');
+    }
   }
 
   Future<void> _findConnectedBluetoothDevice() async {
@@ -84,12 +174,21 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
   }
 
   Future<void> _handleUserSpeech(String userText) async {
+    // Check for wake word patterns first
+    String processedText = _processWakeWords(userText.toLowerCase());
+    
+    // If no wake word detected and text doesn't start with assistant name, ignore
+    if (processedText.isEmpty) {
+      print('No wake word detected, ignoring: $userText');
+      return;
+    }
+    
     setState(() {
-      _messages.add({'role': 'user', 'text': userText});
+      _messages.add({'role': 'user', 'text': processedText});
     });
     String assistantReply;
     try {
-      assistantReply = await _callGeminiApi(userText, isFirst: !_hasGreeted);
+      assistantReply = await _callGeminiApi(processedText, isFirst: !_hasGreeted);
     } catch (e) {
       assistantReply = 'Sorry, I could not process your request.\nError: '
         + e.toString();
@@ -100,8 +199,10 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
     setState(() {
       _messages.add({'role': 'assistant', 'text': assistantReply});
     });
-    await _flutterTts.setLanguage('en-US');
-    await _flutterTts.setPitch(1.0);
+    
+    // Configure TTS based on Bluetooth connection
+    await _configureTTSOutput();
+    
     // Always stop listening before TTS
     if (_isListening) {
       await _speech.stop();
@@ -229,19 +330,52 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
               children: [
                 GestureDetector(
                   onTap: _startListening,
-                  child: Image.asset(
-                    'assets/jarvis.gif',
-                    width: size.width * 0.6,
-                    fit: BoxFit.contain,
+                  child: Container(
+                    width: size.width,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(60),
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.blue.withOpacity(0.1),
+                          Colors.purple.withOpacity(0.1),
+                        ],
+                      ),
+                    ),
+                    child: Center(
+                      child: Container(
+                        width: size.width,
+                        height: 80,
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(40),
+                          color: Colors.black.withOpacity(0.8),
+                        ),
+                        child: SiriWaveform.ios9(
+                          options: IOS9SiriWaveformOptions(
+                            height: 80,
+                            showSupportBar: _isListening,
+                          ),
+                        ),
+                      ),
+                    ),
                   ),
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  _isListening ? 'Listening...' : 'Start Speaking',
+                  _isListening ? 'Listening...' : 'Say "Activate Jarvis" or "Jarvis [command]"',
                   style: const TextStyle(
                     color: Colors.white,
-                    fontSize: 24,
+                    fontSize: 18,
                     fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _isBluetoothConnected ? '🎧 Bluetooth Connected' : '📱 Phone Speaker',
+                  style: TextStyle(
+                    color: _isBluetoothConnected ? Colors.blue : Colors.grey,
+                    fontSize: 14,
                   ),
                 ),
               ],
@@ -250,5 +384,12 @@ class _VoiceChatPageState extends State<VoiceChatPage> {
         ],
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _speech.stop();
+    _flutterTts.stop();
+    super.dispose();
   }
 } 
