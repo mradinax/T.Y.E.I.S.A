@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'package:flutter_tts/flutter_tts.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
+// import 'package:vosk_flutter/vosk_flutter.dart'; // Temporarily disabled
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:audioplayers/audioplayers.dart';
 // import 'package:http/http.dart' as http; // For DeepSeek API
@@ -27,11 +27,14 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
   final TextEditingController _controller = TextEditingController();
   bool _showWelcome = true;
 
-  // Add TTS and STT instances
+  // Add TTS instances (Vosk removed for now - use VoiceChatPage for speech)
   final FlutterTts _flutterTts = FlutterTts();
-  final stt.SpeechToText _speech = stt.SpeechToText();
+  // VoskFlutterPlugin _vosk = VoskFlutterPlugin.instance();
+  // Model? _model;
+  // Recognizer? _recognizer;
+  // SpeechService? _speechService;
   final AudioPlayer _audioPlayer = AudioPlayer();
-  bool _isListening = false;
+  // bool _isListening = false;
   String _lastWords = '';
   bool _isConnecting = false;
   bool _isConnected = false;
@@ -179,6 +182,9 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
   }
 
   void _startListening() async {
+    // Speech functionality temporarily disabled - use VoiceChatPage for voice commands
+    print('Speech functionality disabled in this page. Use VoiceChatPage for voice commands.');
+    /*
     await _playStartListeningSound();
     bool available = await _speech.initialize(
       onStatus: (val) {
@@ -206,6 +212,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
         cancelOnError: false,
       );
     }
+    */
   }
 
   Future<void> _handleUserSpeech(String userText) async {

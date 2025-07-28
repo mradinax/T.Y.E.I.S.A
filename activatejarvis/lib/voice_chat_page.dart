@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:speech_to_text/speech_to_text.dart' as stt;
+import 'package:vosk_flutter/vosk_flutter.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:audioplayers/audioplayers.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:path_provider/path_provider.dart';
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:siri_wave/siri_wave.dart';
 import 'assistant_core.dart';
@@ -34,7 +36,10 @@ class VoiceChatPage extends StatefulWidget {
 }
 
 class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserver {
-  final stt.SpeechToText _speech = stt.SpeechToText();
+  VoskFlutterPlugin _vosk = VoskFlutterPlugin.instance();
+  Model? _model;
+  Recognizer? _recognizer;
+  SpeechService? _speechService;
   final FlutterTts _flutterTts = FlutterTts();
   final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isListening = false;
@@ -70,7 +75,7 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
     _initializeTTS();
     _checkBluetoothConnection();
     _findConnectedBluetoothDevice();
-    _startListening();
+    _initializeVosk(); // Initialize Vosk instead of speech_to_text
     // Periodically check Bluetooth connection
     _startBluetoothMonitoring();
   }
@@ -94,6 +99,277 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
         _userPreferredName = 'jarvis';
       });
       print('Using default assistant name: $_assistantName');
+    }
+  }
+
+  // Initialize Vosk speech recognition
+  Future<void> _initializeVosk() async {
+    try {
+      print('Initializing Vosk speech recognition...');
+      
+      // First, clean up any existing Vosk resources
+      await _cleanupVoskResources();
+      
+      // For now, skip permission checks to test basic Vosk functionality
+      // TODO: Re-enable permission checks once build issues are resolved
+      print('Skipping permission checks for now...');
+      
+      // Extract Vosk model to device storage
+      final modelPath = await _extractVoskModel();
+      if (modelPath == null) {
+        throw Exception('Failed to extract Vosk model');
+      }
+      
+      print('Using Vosk model from: $modelPath');
+      _model = await _vosk.createModel(modelPath);
+      print('Vosk model loaded successfully');
+      
+      // Create recognizer
+      _recognizer = await _vosk.createRecognizer(model: _model!, sampleRate: 16000);
+      print('Vosk recognizer created successfully');
+      
+      // Initialize speech service for microphone input (Android) - only if not already initialized
+      try {
+        _speechService = await _vosk.initSpeechService(_recognizer!);
+        print('Vosk speech service initialized successfully');
+        
+        // Start permanent listening
+        await _startPermanentListening();
+        
+        print('Vosk initialization completed successfully');
+      } catch (e) {
+        if (e.toString().contains('already exist') || e.toString().contains('INITIALIZE_FAIL')) {
+          print('SpeechService already exists, checking existing instance...');
+          
+          // Check if we already have a speech service
+          if (_speechService != null) {
+            print('Using existing speech service instance');
+            await _startPermanentListening();
+            print('Using existing Vosk speech service successfully');
+          } else {
+            print('No existing speech service found, initialization failed');
+            throw Exception('Speech service initialization failed: ${e.toString()}');
+          }
+        } else {
+          throw e;
+        }
+      }
+    } catch (e) {
+      print('Error initializing Vosk: $e');
+      // Fallback to basic text input if Vosk fails
+      _showVoskError(e.toString());
+    }
+  }
+
+  // Show Vosk error and fallback message
+  void _showVoskError(String error) {
+    setState(() {
+      _messages.add({
+        'role': 'system', 
+        'text': 'Vosk initialization failed: $error\nVoice recognition may not work properly.'
+      });
+    });
+  }
+
+  // Extract Vosk model from assets to device storage
+  Future<String?> _extractVoskModel() async {
+    try {
+      final appDir = await getApplicationDocumentsDirectory();
+      final modelDir = Directory('${appDir.path}/vosk-model-small-en-us-0.15');
+      
+      // Check if model already extracted
+      if (await modelDir.exists()) {
+        print('Vosk model already extracted to: ${modelDir.path}');
+        return modelDir.path;
+      }
+      
+      print('Extracting Vosk model to: ${modelDir.path}');
+      await modelDir.create(recursive: true);
+      
+      // List of actual model files that exist in the assets
+      final modelFiles = [
+        'README',
+        'am/final.mdl',
+        'conf/mfcc.conf',
+        'conf/model.conf',
+        'graph/disambig_tid.int',
+        'graph/Gr.fst',
+        'graph/HCLr.fst',
+        'graph/phones/word_boundary.int',
+        'ivector/final.dubm',
+        'ivector/final.ie',
+        'ivector/final.mat',
+        'ivector/global_cmvn.stats',
+        'ivector/online_cmvn.conf',
+        'ivector/splice.conf',
+      ];
+      
+      // Extract each file
+      for (final filePath in modelFiles) {
+        final assetPath = 'assets/vosk-model-small-en-us-0.15/$filePath';
+        final targetFile = File('${modelDir.path}/$filePath');
+        
+        // Create parent directories
+        await targetFile.parent.create(recursive: true);
+        
+        try {
+          final data = await rootBundle.load(assetPath);
+          final bytes = data.buffer.asUint8List();
+          await targetFile.writeAsBytes(bytes);
+          print('✅ Extracted: $filePath');
+        } catch (e) {
+          print('❌ Failed to extract $filePath: $e');
+          return null; // If any file fails, abort
+        }
+      }
+      
+      print('✅ Vosk model extraction completed');
+      return modelDir.path;
+    } catch (e) {
+      print('❌ Error extracting Vosk model: $e');
+      return null;
+    }
+  }
+
+  // Start permanent listening with Vosk
+  Future<void> _startPermanentListening() async {
+    if (_speechService == null) {
+      print('❌ Speech service not initialized');
+      return;
+    }
+    
+    if (_isListening) {
+      print('⚠️ Vosk is already listening');
+      return;
+    }
+    
+    try {
+      print('🎙️ Starting permanent Vosk listening...');
+      if (mounted) {
+        setState(() => _isListening = true);
+      }
+      
+      // Play start listening sound
+      await _playStartListeningSound();
+      
+      // Listen for partial results
+      _speechService!.onPartial().listen((partial) {
+        print('Partial result: $partial');
+        if (mounted) {
+          setState(() {
+            _lastWords = partial;
+          });
+        }
+      });
+      
+      // Listen for final results
+      _speechService!.onResult().listen((result) {
+        print('Final result: $result');
+        
+        // 🔇 CRITICAL: Ignore all speech input while TTS is speaking
+        if (_isSpeaking) {
+          print('🔇 Ignoring speech input during TTS: $result');
+          return;
+        }
+        
+        if (mounted && result.isNotEmpty && !_processingSpeech) {
+          setState(() {
+            _lastWords = result;
+          });
+          
+          // Parse the JSON result to extract just the text
+          try {
+            final Map<String, dynamic> jsonResult = jsonDecode(result);
+            final String text = jsonResult['text'] ?? '';
+            if (text.isNotEmpty) {
+              _handleUserSpeech(text);
+            }
+          } catch (e) {
+            print('Error parsing Vosk result JSON: $e');
+            // Fallback: treat result as plain text
+            _handleUserSpeech(result);
+          }
+        }
+      });
+      
+      // Start the speech service
+      await _speechService!.start();
+      
+      print('Vosk permanent listening started successfully');
+    } catch (e) {
+      print('Error starting Vosk listening: $e');
+      if (mounted) {
+        setState(() => _isListening = false);
+      }
+    }
+  }
+
+  // Stop Vosk listening
+  Future<void> _stopVoskListening() async {
+    try {
+      if (_speechService != null) {
+        await _speechService!.stop();
+        await _playStopListeningSound();
+      }
+      if (mounted) {
+        setState(() => _isListening = false);
+      }
+      print('Vosk listening stopped');
+    } catch (e) {
+      print('Error stopping Vosk listening: $e');
+    }
+  }
+
+  // Clean up Vosk resources completely
+  Future<void> _cleanupVoskResources() async {
+    try {
+      print('Cleaning up existing Vosk resources...');
+      
+      // Stop listening if active
+      await _stopVoskListening();
+      
+      // Dispose of speech service
+      if (_speechService != null) {
+        try {
+          await _speechService!.dispose();
+          print('Speech service disposed successfully');
+        } catch (e) {
+          print('Error disposing speech service: $e');
+        }
+        _speechService = null;
+      }
+      
+      // Dispose of recognizer
+      if (_recognizer != null) {
+        try {
+          await _recognizer!.dispose();
+          print('Recognizer disposed successfully');
+        } catch (e) {
+          print('Error disposing recognizer: $e');
+        }
+        _recognizer = null;
+      }
+      
+      // Dispose of model
+      if (_model != null) {
+        try {
+          _model!.dispose();
+          print('Model disposed successfully');
+        } catch (e) {
+          print('Error disposing model: $e');
+        }
+        _model = null;
+      }
+      
+      if (mounted) {
+        setState(() {
+          _isListening = false;
+        });
+      }
+      
+      print('Vosk resources cleaned up successfully');
+    } catch (e) {
+      print('Error cleaning up Vosk resources: $e');
     }
   }
 
@@ -519,198 +795,17 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
   }
 
   void _startListening() async {
-    // Clear any existing timers
-    _autoStopTimer?.cancel();
-    _silenceTimer?.cancel();
+    // With Vosk, this method now just ensures permanent listening is active
+    if (_speechService == null) {
+      print('⚠️ Vosk speech service not initialized yet');
+      return;
+    }
     
-    bool available = await _speech.initialize(
-      onStatus: (val) async {
-        print('Speech status: $val'); // Debug log
-        if (val == 'done' || val == 'notListening') {
-          // Play stop listening sound
-          await _playStopListeningSound();
-          if (mounted) {
-            setState(() => _isListening = false);
-          }
-          
-          // Don't process speech here - wait for final result in onResult callback
-          // This prevents processing partial results when status changes to "done"
-          
-        } else if (_waitingForWakeWord && mounted && !_processingSpeech) {
-          // Only restart wake word listening if no speech was detected
-          if (_lastWords.isEmpty && (val == 'notListening' || val == 'done')) {
-            print('No speech detected while waiting for wake word, restarting...');
-            Future.delayed(const Duration(milliseconds: 1000), () {
-              if (mounted && _waitingForWakeWord && _lastWords.isEmpty) {
-                _startWakeWordListening();
-              }
-            });
-          }
-        }
-      },
-      onError: (val) {
-        print('Speech error: $val');
-        if (mounted) {
-          setState(() => _isListening = false);
-        }
-        if (_waitingForWakeWord && mounted) {
-          _startWakeWordListening();
-        }
-      },
-    );
-    
-    if (available) {
-      // Play start listening sound before starting speech recognition
-      await _playStartListeningSound();
-      setState(() => _isListening = true);
-      
-      // Set auto-stop timer (10 seconds for normal listening, 30 seconds for wake word)
-      int autoStopDuration = _waitingForWakeWord ? 30 : 10;
-      _autoStopTimer = Timer(Duration(seconds: autoStopDuration), () {
-        if (_isListening && mounted) {
-          print('Auto-stopping listening after ${autoStopDuration}s of no input');
-          _speech.stop();
-          if (_isInContinuousMode && !_waitingForWakeWord) {
-            // Enter wake word waiting mode
-            if (mounted) {
-              setState(() => _waitingForWakeWord = true);
-            }
-            Future.delayed(const Duration(milliseconds: 1000), () {
-              if (mounted) {
-                _startWakeWordListening();
-              }
-            });
-          } else if (_waitingForWakeWord) {
-            // Restart wake word listening
-            Future.delayed(const Duration(milliseconds: 1000), () {
-              if (mounted && _waitingForWakeWord) {
-                _startWakeWordListening();
-              }
-            });
-          }
-        }
-      });
-      
-      _speech.listen(
-        onResult: (val) {
-          print('Speech result - Final: ${val.finalResult}, Text: "${val.recognizedWords}"'); // Debug log
-          if (mounted) {
-            setState(() {
-              // Always update with the latest recognized words
-              _lastWords = val.recognizedWords;
-            });
-          }
-          
-          // Reset silence timer when we get speech input
-          _silenceTimer?.cancel();
-          if (!val.finalResult) {
-            // Start silence timer for partial results - longer for wake word mode
-            int silenceDuration = _waitingForWakeWord ? 3 : 2;
-            _silenceTimer = Timer(Duration(seconds: silenceDuration), () {
-              if (_isListening && !val.finalResult && mounted) {
-                print('Silence detected, stopping listening');
-                _speech.stop();
-              }
-            });
-          } else {
-            // Final result received - process the speech now
-            _silenceTimer?.cancel();
-            print('Final result received: "${val.recognizedWords}"');
-            
-            // Process speech when we get the final result
-            if (val.recognizedWords.isNotEmpty && !_processingSpeech) {
-              _processingSpeech = true;
-              print('🎯 Processing final speech: "${val.recognizedWords}"'); // Debug log
-              print('🔧 Current state - Waiting for wake word: $_waitingForWakeWord, Continuous mode: $_isInContinuousMode');
-              print('🎵 Current flags: isListening=$_isListening, isSpeaking=$_isSpeaking');
-              
-              // Process the final result asynchronously
-              Future.microtask(() async {
-                try {
-                  // If we're waiting for wake word, check for wake word first
-                  if (_waitingForWakeWord) {
-                    print('Checking for wake word in: "${val.recognizedWords}"');
-                    bool hasWakeWord = _containsWakeWord(val.recognizedWords);
-                    print('Wake word detected: $hasWakeWord');
-                    
-                    if (hasWakeWord) {
-                      print('Wake word detected: "${val.recognizedWords}"');
-                      
-                      // Process the wake word and extract command
-                      String processedText = _processWakeWords(val.recognizedWords);
-                      print('Processed text after wake word removal: "$processedText"');
-                      
-                      // Check if this is a "close YouTube" command specifically
-                      if (processedText.toLowerCase().contains('close youtube') || 
-                          processedText.toLowerCase().contains('exit youtube') ||
-                          processedText.toLowerCase().contains('stop youtube')) {
-                        print('Close YouTube command detected from wake word: "$processedText"');
-                        // Handle the close YouTube command directly
-                        await _handleUserSpeech(processedText);
-                      } else if (processedText.trim().isNotEmpty && processedText.trim() != val.recognizedWords.trim() && processedText != "hello") {
-                        // There's a command after wake word, execute it immediately
-                        print('Wake word + command detected: "$processedText"');
-                        if (mounted) {
-                          setState(() {
-                            _waitingForWakeWord = false;
-                            _isInContinuousMode = true;
-                          });
-                        }
-                        await _handleUserSpeech(processedText);
-                      } else {
-                        // Just wake word, acknowledge and start listening for command
-                        if (mounted) {
-                          setState(() {
-                            _waitingForWakeWord = false;
-                            _isInContinuousMode = true;
-                          });
-                        }
-                        await _speakResponse("Yes, I'm listening!");
-                      }
-                    } else {
-                      print('No wake word detected while waiting, continuing to wait...');
-                      print('Looking for assistant name: $_assistantName or alternatives like jarvis, tyesia');
-                      
-                      // If user said something but no wake word detected, just continue listening silently
-                      if (val.recognizedWords.trim().length > 2) {
-                        print('User said something but no wake word: "${val.recognizedWords}"');
-                        // Don't give hint, just continue listening silently
-                        Future.delayed(const Duration(milliseconds: 500), () {
-                          if (mounted && _waitingForWakeWord) {
-                            _startWakeWordListening();
-                          }
-                        });
-                      } else {
-                        Future.delayed(const Duration(milliseconds: 500), () {
-                          if (mounted && _waitingForWakeWord) {
-                            _startWakeWordListening();
-                          }
-                        });
-                      }
-                    }
-                  } else {
-                    // Normal command processing (not waiting for wake word)
-                    String processedText = _processWakeWords(val.recognizedWords);
-                    if (processedText.trim().isNotEmpty && processedText.trim() != val.recognizedWords.trim()) {
-                      // Wake word found and removed, use processed text
-                      await _handleUserSpeech(processedText);
-                    } else {
-                      // No wake word, use original text
-                      await _handleUserSpeech(val.recognizedWords);
-                    }
-                  }
-                } finally {
-                  _processingSpeech = false;
-                }
-              });
-            }
-          }
-        },
-        listenFor: Duration(seconds: _waitingForWakeWord ? 30 : 20), // Increased duration
-        pauseFor: Duration(seconds: _waitingForWakeWord ? 4 : 3),     // Increased pause
-        cancelOnError: false,
-        partialResults: true,
-      );
+    if (!_isListening) {
+      print('🔄 Restarting Vosk listening...');
+      await _startPermanentListening();
+    } else {
+      print('✅ Vosk is already listening');
     }
   }
 
@@ -739,11 +834,8 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
   Future<void> _stopAllListening() async {
     print('Stopping all speech recognition - app opened...');
     
-    // Stop speech recognition
-    if (_isListening) {
-      await _speech.stop();
-      await _playStopListeningSound();
-    }
+    // Stop Vosk speech recognition
+    await _stopVoskListening();
     
     // Clear all timers
     _listeningTimer?.cancel();
@@ -762,61 +854,17 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
     print('All speech recognition stopped. Come back to the app to resume.');
   }
 
-  // Helper method to check if text contains wake word
-  bool _containsWakeWord(String text) {
-    List<String> wakeWords = [
-      _assistantName, 
-      'hey $_assistantName', 
-      'okay $_assistantName',
-      'ok $_assistantName',
-      // Common alternatives
-      'jarvis', 
-      'hey jarvis', 
-      'okay jarvis',
-      'ok jarvis',
-      'tyesia', 
-      'hey tyesia', 
-      'okay tyesia',
-      'ok tyesia',
-      'assistant', 
-      'hey assistant',
-      'okay assistant',
-      'ok assistant',
-      'hello'
-    ];
-    String lowerText = text.toLowerCase().trim();
-    
-    print('Checking wake words in: "$lowerText"');
-    print('Available wake words: ${wakeWords.join(", ")}');
-    
-    for (String wake in wakeWords) {
-      if (lowerText.contains(wake)) {
-        print('✅ Wake word found: "$wake" in "$text"');
-        return true;
-      }
-    }
-    print('❌ No wake word found in: "$text"');
-    return false;
-  }
-
   /// Get appropriate status text based on current mode
   String _getStatusText() {
-    if (_isListening) {
-      if (_waitingForWakeWord) {
-        return 'Listening for commands...';
-      }
-      return 'Listening...';
-    } else if (_isSpeaking) {
+    if (_isSpeaking) {
       return 'Speaking...';
-    } else if (_waitingForWakeWord) {
-      return 'Ready to listen...';
-    } else if (_isInContinuousMode) {
-      return 'Ready for next command...';
+    } else if (_isListening) {
+      return 'Always listening... (Vosk)';
     } else if (!_waitingForWakeWord && !_isInContinuousMode) {
       // This indicates STT is completely off (like when any app is opened)
       return 'Come back when you need me';
     } else {
-      return 'Ready to assist you';
+      return 'Initializing Vosk...';
     }
   }
 
@@ -1171,11 +1219,10 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
     // Configure TTS and start immediately - no delay
     await _configureTTSOutput();
     
-    // Always stop listening before TTS
+    // Pause Vosk listening during TTS (don't stop completely)
     if (_isListening) {
-      await _speech.stop();
-      await _playStopListeningSound();
-      setState(() => _isListening = false);
+      print('Pausing Vosk during TTS...');
+      // Don't stop Vosk completely, just ignore results during TTS
     }
     
     // Clear any existing timers
@@ -1190,8 +1237,8 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
         setState(() => _isSpeaking = false);
       }
       
-      // Shorter delay for faster response
-      await Future.delayed(const Duration(milliseconds: 400));
+      // Extended delay to prevent TTS echo pickup from speakers
+      await Future.delayed(const Duration(milliseconds: 2000));
       
       if (mounted && !_isListening && !_isSpeaking) {
         if (stopContinuousMode) {
@@ -1256,6 +1303,11 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
         lowerText.contains('calling') ||
         lowerText.contains('launching') ||
         lowerText.contains('sorry') ||
+        lowerText.contains('hello') && lowerText.contains('how') ||
+        lowerText.contains('i am') ||
+        lowerText.contains('here to help') ||
+        lowerText.contains('assistant') ||
+        lowerText.contains('jarvis') ||
         lowerText.startsWith('youtube') ||
         lowerText.startsWith('spotify') ||
         lowerText.startsWith('instagram') ||
@@ -1320,10 +1372,12 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
       _hasGreeted = true;
     }
     
-    setState(() {
-      _messages.add({'role': 'assistant', 'text': assistantReply});
-      _isSpeaking = true; // Set speaking state immediately
-    });
+    if (mounted) {
+      setState(() {
+        _messages.add({'role': 'assistant', 'text': assistantReply});
+        _isSpeaking = true; // Set speaking state immediately
+      });
+    }
     
     // Add assistant response to conversation history
     _addToConversationHistory('assistant', assistantReply);
@@ -1333,11 +1387,10 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
     // Configure TTS and start speaking immediately - no delay
     await _configureTTSOutput();
     
-    // Always stop listening before TTS
+    // Pause Vosk listening during TTS (don't stop completely)
     if (_isListening) {
-      await _speech.stop();
-      await _playStopListeningSound();
-      setState(() => _isListening = false);
+      print('Pausing Vosk during TTS...');
+      // Don't stop Vosk completely, just ignore results during TTS
     }
     
     // Clear any existing timers
@@ -1352,8 +1405,8 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
         setState(() => _isSpeaking = false);
       }
       
-      // Shorter delay for faster response
-      await Future.delayed(const Duration(milliseconds: 500));
+      // Extended delay to prevent TTS echo pickup
+      await Future.delayed(const Duration(milliseconds: 2000));
       
       if (mounted && !_isListening && !_isSpeaking) {
         // Enter continuous mode after Gemini response
@@ -1569,10 +1622,7 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
       case AppLifecycleState.paused:
         // App goes to background (e.g., when opening YouTube)
         print('App paused - stopping speech recognition');
-        if (_isListening) {
-          _speech.stop();
-          setState(() => _isListening = false);
-        }
+        _stopVoskListening();
         // Clear timers to prevent issues
         _listeningTimer?.cancel();
         _autoStopTimer?.cancel();
@@ -1605,7 +1655,7 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _speech.stop();
+    _cleanupVoskResources();
     _flutterTts.stop();
     _audioPlayer.dispose();
     // Clean up all timers
