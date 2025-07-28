@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:audioplayers/audioplayers.dart';
 // import 'package:http/http.dart' as http; // For DeepSeek API
 import 'package:activatejarvis/voice_chat_page.dart';
 import 'dart:io';
@@ -29,6 +30,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
   // Add TTS and STT instances
   final FlutterTts _flutterTts = FlutterTts();
   final stt.SpeechToText _speech = stt.SpeechToText();
+  final AudioPlayer _audioPlayer = AudioPlayer();
   bool _isListening = false;
   String _lastWords = '';
   bool _isConnecting = false;
@@ -54,6 +56,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
   void dispose() {
     _controller.dispose();
     _flutterTts.stop();
+    _audioPlayer.dispose();
     _scanSubscription?.cancel();
     super.dispose();
   }
@@ -79,7 +82,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       await _speak('Audio device already connected. Hey there, Jarvis here');
       // Navigate to VoiceChatPage
       if (mounted) {
-        Navigator.pushReplacement(
+        Navigator.push(
           context,
           MaterialPageRoute(builder: (context) => const VoiceChatPage()),
         );
@@ -132,7 +135,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       await _speak('Hey there, Jarvis here');
       // Navigate to VoiceChatPage
       if (mounted) {
-        Navigator.pushReplacement(
+        Navigator.push(
           context,
           MaterialPageRoute(builder: (context) => const VoiceChatPage()),
         );
@@ -159,11 +162,29 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
     await _flutterTts.speak(text);
   }
 
+  Future<void> _playStartListeningSound() async {
+    try {
+      await _audioPlayer.play(AssetSource('mixkit-high-tech-bleep-2521.wav'));
+    } catch (e) {
+      print('Error playing start listening sound: $e');
+    }
+  }
+
+  Future<void> _playStopListeningSound() async {
+    try {
+      await _audioPlayer.play(AssetSource('mixkit-interface-option-select-2573.wav'));
+    } catch (e) {
+      print('Error playing stop listening sound: $e');
+    }
+  }
+
   void _startListening() async {
+    await _playStartListeningSound();
     bool available = await _speech.initialize(
       onStatus: (val) {
         if (val == 'done' || val == 'notListening') {
           setState(() => _isListening = false);
+          _playStopListeningSound();
           if (_lastWords.isNotEmpty) {
             _handleUserSpeech(_lastWords);
           }
@@ -171,6 +192,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       },
       onError: (val) {
         setState(() => _isListening = false);
+        _playStopListeningSound();
       },
     );
     if (available) {
@@ -181,6 +203,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
             _lastWords = val.recognizedWords;
           });
         },
+        cancelOnError: false,
       );
     }
   }
@@ -228,7 +251,14 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        // Removed leading back button
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: Colors.white),
+          onPressed: () {
+            if (Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+            }
+          },
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.settings, color: Colors.white),
@@ -238,8 +268,9 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
           ),
         ],
       ),
-      body: Stack(
-        children: [
+      body: SafeArea(
+        child: Stack(
+          children: [
           // Centered text and image in the middle of the screen
           Center(
             child: SizedBox(
@@ -284,7 +315,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
           Positioned(
             left: 0,
             right: 0,
-            bottom: 40,
+            bottom: 110, // Moved up from 40 to 110
             child: Center(
               child: SizedBox(
                 width: size.width * 0.7,
@@ -331,7 +362,51 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
               ),
             ),
           ),
+          // Continue without earbuds button
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 50, // Moved up from -20 to 50
+            child: Center(
+              child: SizedBox(
+                width: MediaQuery.of(context).size.width * 0.7,
+                height: 50,
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Colors.white30, width: 1.5),
+                    borderRadius: BorderRadius.circular(16),
+                  ),
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.transparent,
+                      shadowColor: Colors.transparent,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                    ),
+                    onPressed: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute(
+                          builder: (context) => VoiceChatPage(),
+                        ),
+                      );
+                    },
+                    child: Text(
+                      'Continue without earbuds',
+                      style: TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
         ],
+        ),
       ),
     );
   }

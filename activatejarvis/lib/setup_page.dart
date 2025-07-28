@@ -45,18 +45,7 @@ class _SetupPageState extends State<SetupPage> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
-                  children: [
-                    IconButton(
-                      icon: const Icon(Icons.arrow_back, color: Colors.white),
-                      onPressed: () {
-                        if (Navigator.of(context).canPop()) {
-                          Navigator.of(context).pop();
-                        }
-                      },
-                    ),
-                  ],
-                ),
+                const SizedBox(height: 16), // Add some top spacing
                 Expanded(
                   child: SingleChildScrollView(
                     child: Padding(
@@ -150,7 +139,7 @@ class _SetupPageState extends State<SetupPage> {
                                 // Deploy action
                                 final assistantName = _assistantNameController.text.trim();
                                 final userName = _userNameController.text.trim();
-                                Navigator.of(context).pushReplacement(
+                                Navigator.of(context).push(
                                   MaterialPageRoute(
                                     builder: (context) => JarvisChatPage(
                                       userName: userName.isEmpty ? 'User' : userName,
