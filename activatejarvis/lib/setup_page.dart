@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'jarvis_chat_page.dart';
 
 class SetupPage extends StatefulWidget {
@@ -135,11 +136,19 @@ class _SetupPageState extends State<SetupPage> {
                                   borderRadius: BorderRadius.circular(14),
                                 ),
                               ),
-                              onPressed: () {
+                              onPressed: () async {
                                 // Deploy action
                                 final assistantName = _assistantNameController.text.trim();
                                 final userName = _userNameController.text.trim();
-                                Navigator.of(context).push(
+                                
+                                // Save setup completion and user preferences
+                                final prefs = await SharedPreferences.getInstance();
+                                await prefs.setBool('setup_completed', true);
+                                await prefs.setString('user_name', userName.isEmpty ? 'User' : userName);
+                                await prefs.setString('assistant_name', assistantName.isEmpty ? 'Jarvis' : assistantName);
+                                await prefs.setString('voice_type', _voiceType);
+                                
+                                Navigator.of(context).pushReplacement(
                                   MaterialPageRoute(
                                     builder: (context) => JarvisChatPage(
                                       userName: userName.isEmpty ? 'User' : userName,

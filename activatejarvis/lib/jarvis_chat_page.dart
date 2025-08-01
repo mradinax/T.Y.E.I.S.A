@@ -6,6 +6,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:audioplayers/audioplayers.dart';
 // import 'package:http/http.dart' as http; // For DeepSeek API
 import 'package:activatejarvis/voice_chat_page.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:io';
 
 class JarvisChatPage extends StatefulWidget {
@@ -44,9 +45,17 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
   List<BluetoothDevice> _devicesList = [];
   StreamSubscription? _scanSubscription;
 
+  // Welcome animation variables
+  bool _isFirstTime = true;
+  bool _isShowingWelcomeAnimation = false;
+  String _currentWelcomeText = "";
+  Timer? _welcomeTextTimer;
+  List<String> _welcomeMessages = [];
+
   @override
   void initState() {
     super.initState();
+    _checkFirstTimeUser();
     // Delay welcome message slightly
     Future.delayed(const Duration(milliseconds: 500), () {
       setState(() {
@@ -55,9 +64,108 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
     });
   }
 
+  // Check if this is the first time user and setup welcome messages
+  Future<void> _checkFirstTimeUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    bool? hasUsedBefore = prefs.getBool('has_used_chat_page');
+    
+    if (hasUsedBefore == null || !hasUsedBefore) {
+      // First time user
+      setState(() {
+        _isFirstTime = true;
+        _welcomeMessages = [
+          'Hello, sir. Initiating startup sequence.',
+          'Activating all protocols.',
+          'System check: complete.',
+          'Power levels at 100%.',
+          'You are now connected, sir.'
+        ];
+      });
+      
+      // Start welcome animation after a short delay
+      Future.delayed(const Duration(milliseconds: 1000), () {
+        if (mounted) {
+          _startWelcomeAnimation();
+        }
+      });
+      
+      // Mark as used
+      await prefs.setBool('has_used_chat_page', true);
+    } else {
+      // Returning user
+      setState(() {
+        _isFirstTime = false;
+        _welcomeMessages = [
+          'Welcome back ${widget.userName}',
+          '${widget.assistantName} here to help'
+        ];
+      });
+      
+      // Start shorter welcome animation
+      Future.delayed(const Duration(milliseconds: 1000), () {
+        if (mounted) {
+          _startWelcomeAnimation();
+        }
+      });
+    }
+  }
+
+  // Start the welcome animation sequence
+  void _startWelcomeAnimation() {
+    if (_welcomeMessages.isEmpty) return;
+    
+    setState(() {
+      _isShowingWelcomeAnimation = true;
+      _currentWelcomeText = "";
+    });
+    
+    // Start with first message
+    _showNextWelcomeMessage(0);
+  }
+
+  // Show next welcome message with typewriter effect and synchronized TTS
+  void _showNextWelcomeMessage(int messageIndex) {
+    if (messageIndex >= _welcomeMessages.length) {
+      // All messages shown, hide animation after a delay
+      Timer(const Duration(seconds: 2), () {
+        if (mounted) {
+          setState(() {
+            _isShowingWelcomeAnimation = false;
+          });
+        }
+      });
+      return;
+    }
+    
+    String currentMessage = _welcomeMessages[messageIndex];
+    int _welcomeTextIndex = 0;
+    
+    // Speak current message
+    _speak(currentMessage);
+    
+    _welcomeTextTimer?.cancel();
+    _welcomeTextTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
+      if (_welcomeTextIndex < currentMessage.length) {
+        setState(() {
+          _currentWelcomeText = currentMessage.substring(0, _welcomeTextIndex + 1);
+        });
+        _welcomeTextIndex++;
+      } else {
+        timer.cancel();
+        // Wait briefly then show next message
+        Timer(const Duration(milliseconds: 600), () {
+          if (mounted) {
+            _showNextWelcomeMessage(messageIndex + 1);
+          }
+        });
+      }
+    });
+  }
+
   @override
   void dispose() {
     _controller.dispose();
+    _welcomeTextTimer?.cancel();
     _flutterTts.stop();
     _audioPlayer.dispose();
     _scanSubscription?.cancel();
@@ -87,7 +195,10 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       if (mounted) {
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (context) => const VoiceChatPage()),
+          MaterialPageRoute(builder: (context) => VoiceChatPage(
+            userName: widget.userName,
+            assistantName: widget.assistantName,
+          )),
         );
       }
       return;
@@ -140,7 +251,10 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       if (mounted) {
         Navigator.push(
           context,
-          MaterialPageRoute(builder: (context) => const VoiceChatPage()),
+          MaterialPageRoute(builder: (context) => VoiceChatPage(
+            userName: widget.userName,
+            assistantName: widget.assistantName,
+          )),
         );
       }
     } else {
@@ -162,6 +276,7 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
   Future<void> _speak(String text) async {
     await _flutterTts.setLanguage('en-US');
     await _flutterTts.setPitch(1.0);
+    await _flutterTts.setSpeechRate(0.9); // Faster speech rate to match typewriter animation
     await _flutterTts.speak(text);
   }
 
@@ -296,15 +411,34 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(
-                            'Hey ${widget.userName},\n${widget.assistantName} is here to help',
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 25,
-                              fontWeight: FontWeight.w900,
+                          // Animated welcome text above the gif
+                          if (_isShowingWelcomeAnimation)
+                            Container(
+                              height: 60, // Fixed height to prevent layout shifts
+                              margin: const EdgeInsets.only(bottom: 16),
+                              child: Center(
+                                child: Text(
+                                  _currentWelcomeText,
+                                  textAlign: TextAlign.center,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 25,
+                                    fontWeight: FontWeight.w900,
+                                  ),
+                                ),
+                              ),
+                            )
+                          else
+                            // Default welcome text when not animating
+                            Text(
+                              'Hey ${widget.userName},\n${widget.assistantName} is here to help',
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 25,
+                                fontWeight: FontWeight.w900,
+                              ),
                             ),
-                          ),
                           const SizedBox(height: 16),
                           Image.asset(
                             'assets/jarvis.gif',
@@ -394,7 +528,10 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
                     onPressed: () {
                       Navigator.of(context).push(
                         MaterialPageRoute(
-                          builder: (context) => VoiceChatPage(),
+                          builder: (context) => VoiceChatPage(
+                            userName: widget.userName,
+                            assistantName: widget.assistantName,
+                          ),
                         ),
                       );
                     },

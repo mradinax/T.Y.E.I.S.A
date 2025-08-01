@@ -17,8 +17,16 @@ import 'assistant_core.dart';
 class VoiceChatPage extends StatefulWidget {
   final VoidCallback? onBack;
   final VoidCallback? onSettings;
+  final String? userName;
+  final String? assistantName;
 
-  const VoiceChatPage({Key? key, this.onBack, this.onSettings}) : super(key: key);
+  const VoiceChatPage({
+    Key? key, 
+    this.onBack, 
+    this.onSettings,
+    this.userName,
+    this.assistantName,
+  }) : super(key: key);
 
   static const MethodChannel _audioChannel = MethodChannel('activatejarvis/audio');
 
@@ -50,6 +58,9 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
   bool _processingSpeech = false;
   bool _hasGreeted = false;
   bool _isSpeaking = false;
+  String _lastProcessedText = ''; // Track last processed text to prevent duplicates
+  DateTime _lastProcessedTime = DateTime(2000); // Track when last text was processed
+  bool _isTtsActive = false; // Track TTS state to prevent STT during TTS
   Timer? _listeningTimer;
   Timer? _silenceTimer; // Timer for silence detection
   Timer? _autoStopTimer; // Timer for auto-stopping after 5-10 seconds
@@ -61,6 +72,7 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
   // Wake word and Bluetooth features
   String _assistantName = "jarvis";  // Default assistant name
   String _userPreferredName = ""; // User's preferred assistant name from SharedPreferences
+  String _userName = ""; // User's actual name from SharedPreferences
   bool _isBluetoothConnected = false;
   
   // Conversation memory
@@ -71,7 +83,7 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _loadAssistantName(); // Load assistant name from SharedPreferences
+    _loadAssistantName();
     _initializeTTS();
     _checkBluetoothConnection();
     _findConnectedBluetoothDevice();
@@ -80,25 +92,61 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
     _startBluetoothMonitoring();
   }
 
-  // Load assistant name from SharedPreferences
+  // Load user data and check if first time
   Future<void> _loadAssistantName() async {
     final prefs = await SharedPreferences.getInstance();
-    String? savedAssistantName = prefs.getString('assistant_name');
     
-    if (savedAssistantName != null && savedAssistantName.isNotEmpty) {
+    // Load assistant name - prioritize constructor parameter
+    if (widget.assistantName != null && widget.assistantName!.isNotEmpty) {
       setState(() {
-        _userPreferredName = savedAssistantName.toLowerCase();
+        _userPreferredName = widget.assistantName!.toLowerCase();
         _assistantName = _userPreferredName;
       });
-      print('Loaded assistant name from SharedPreferences: $_assistantName');
+      print('Using assistant name from constructor: $_assistantName');
+      // Also save to SharedPreferences for future use
+      await prefs.setString('assistant_name', widget.assistantName!);
     } else {
-      // Save default name if none exists
-      await prefs.setString('assistant_name', 'jarvis');
+      String? savedAssistantName = prefs.getString('assistant_name');
+      if (savedAssistantName != null && savedAssistantName.isNotEmpty) {
+        setState(() {
+          _userPreferredName = savedAssistantName.toLowerCase();
+          _assistantName = _userPreferredName;
+        });
+        print('Loaded assistant name from SharedPreferences: $_assistantName');
+      } else {
+        // Save default name if none exists
+        await prefs.setString('assistant_name', 'jarvis');
+        setState(() {
+          _assistantName = 'jarvis';
+          _userPreferredName = 'jarvis';
+        });
+        print('Using default assistant name: $_assistantName');
+      }
+    }
+    
+    // Load user name - prioritize constructor parameter
+    if (widget.userName != null && widget.userName!.isNotEmpty) {
       setState(() {
-        _assistantName = 'jarvis';
-        _userPreferredName = 'jarvis';
+        _userName = widget.userName!;
       });
-      print('Using default assistant name: $_assistantName');
+      print('Using user name from constructor: $_userName');
+      // Also save to SharedPreferences for future use
+      await prefs.setString('user_name', widget.userName!);
+    } else {
+      String? savedUserName = prefs.getString('user_name');
+      if (savedUserName != null && savedUserName.isNotEmpty) {
+        setState(() {
+          _userName = savedUserName;
+        });
+        print('Loaded user name from SharedPreferences: $_userName');
+      } else {
+        // Default user name
+        setState(() {
+          _userName = 'Aditya Naik'; // Default as per requirement
+        });
+        await prefs.setString('user_name', _userName);
+        print('Using default user name: $_userName');
+      }
     }
   }
 
@@ -267,8 +315,8 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
         print('Final result: $result');
         
         // 🔇 CRITICAL: Ignore all speech input while TTS is speaking
-        if (_isSpeaking) {
-          print('🔇 Ignoring speech input during TTS: $result');
+        if (_isSpeaking || _isTtsActive) {
+          print('🔇 BLOCKING speech input during TTS: $result');
           return;
         }
         
@@ -282,12 +330,12 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
             final Map<String, dynamic> jsonResult = jsonDecode(result);
             final String text = jsonResult['text'] ?? '';
             if (text.isNotEmpty) {
-              _handleUserSpeech(text);
+              _processSpeechWithDuplicateCheck(text);
             }
           } catch (e) {
             print('Error parsing Vosk result JSON: $e');
             // Fallback: treat result as plain text
-            _handleUserSpeech(result);
+            _processSpeechWithDuplicateCheck(result);
           }
         }
       });
@@ -485,7 +533,27 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
             
             print('Checking voice: $name | Locale: $locale | Gender: $gender');
             
-            // Priority 1: British male voices with specific patterns
+            // Priority 1: Specific US English male voices first (your installed voice)
+            if (name.contains('en-us-x-sfg#male_1-local') || 
+                name.contains('sfg#male_1') ||
+                (locale.contains('en-us') && name.contains('male_1'))) {
+              print('🇺🇸 ✅ PRIORITY 1: Found your US English Voice 5: $name');
+              return true;
+            }
+            
+            // Priority 2: Any US English male voice by gender
+            if (locale.contains('en-us') && gender.contains('male') && !gender.contains('female')) {
+              print('🇺🇸 ✅ PRIORITY 2: Found US English male voice by gender: $name');
+              return true;
+            }
+            
+            // Priority 3: Any US English male voice by name patterns
+            if (locale.contains('en-us') && (name.contains('male') && !name.contains('female'))) {
+              print('🇺🇸 ✅ PRIORITY 3: Found US English male voice by name: $name');
+              return true;
+            }
+            
+            // Priority 4: British male voices with specific patterns
             if (locale.contains('en-gb') || locale.contains('en_gb') || locale.contains('gb')) {
               // Check for explicit male gender
               if (gender.contains('male') && !gender.contains('female')) {
@@ -579,71 +647,89 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
               },
               orElse: () => voices.firstWhere(
                 (voice) {
-                  String locale = voice['locale'].toString().toLowerCase();
-                  if (locale.contains('en-gb') || locale.contains('gb')) {
-                    print('✅ Found British voice (any gender): ${voice['name']}');
+                  String name = voice['name'].toString().toLowerCase();
+                  String gender = voice['gender']?.toString().toLowerCase() ?? '';
+                  
+                  // STRICT: No female voices in fallback either
+                  bool isFemale = gender.contains('female') || 
+                                 name.contains('female') || name.contains('woman') ||
+                                 name.contains('lady') || name.contains('samantha') ||
+                                 name.contains('emily') || name.contains('sarah');
+                  
+                  if (isFemale) {
+                    print('❌ REJECTED female voice in fallback: $name');
+                    return false;
+                  }
+                  
+                  // Look for ANY male voice (not just English)
+                  bool isMale = gender.contains('male') && !gender.contains('female') ||
+                               name.contains('male') && !name.contains('female') ||
+                               name.contains('man');
+                  
+                  if (isMale) {
+                    print('✅ Found male voice (any language): $name');
                     return true;
                   }
+                  
                   return false;
                 },
-                orElse: () => voices.firstWhere(
-                  (voice) {
-                    String locale = voice['locale'].toString().toLowerCase();
-                    if (locale.contains('en')) {
-                      print('✅ Found English voice (any gender): ${voice['name']}');
-                      return true;
-                    }
-                    return false;
-                  },
-                  orElse: () {
-                    print('⚠️ Using first available voice: ${voices.first['name']}');
-                    return voices.first;
-                  },
-                ),
+                orElse: () {
+                  print('⚠️ NO MALE VOICES FOUND - Using default engine settings');
+                  // Return null to use default engine voice instead of forcing female
+                  return null;
+                },
               ),
             ),
           ),
         );
         
-        print('🎯 SELECTED VOICE: ${targetVoice['name']} (${targetVoice['locale']}) Gender: ${targetVoice['gender'] ?? 'unknown'}');
-        
-        await _flutterTts.setVoice({
-          'name': targetVoice['name'],
-          'locale': targetVoice['locale']
-        });
-        
-        // Additional verification - try to set voice by exact name if it's the British English Male Voice 1
-        String selectedVoiceName = targetVoice['name'].toString().toLowerCase();
-        if (!selectedVoiceName.contains('british') || !selectedVoiceName.contains('male')) {
-          // Try to find the exact British English Male Voice 1
-          var britishMaleVoice1 = voices.where((voice) {
-            String name = voice['name'].toString().toLowerCase();
-            return name.contains('british english male') || 
-                   name.contains('english (uk) male') ||
-                   (name.contains('british') && name.contains('male') && name.contains('1'));
-          }).toList();
+        if (targetVoice != null) {
+          print('🎯 SELECTED VOICE: ${targetVoice['name']} (${targetVoice['locale']}) Gender: ${targetVoice['gender'] ?? 'unknown'}');
           
-          if (britishMaleVoice1.isNotEmpty) {
-            print('🔄 Found specific British English Male Voice: ${britishMaleVoice1.first['name']}');
-            await _flutterTts.setVoice({
-              'name': britishMaleVoice1.first['name'],
-              'locale': britishMaleVoice1.first['locale']
-            });
-            targetVoice = britishMaleVoice1.first;
-          }
+          await _flutterTts.setVoice({
+            'name': targetVoice['name'],
+            'locale': targetVoice['locale']
+          });
+        } else {
+          print('🎯 NO SUITABLE MALE VOICE FOUND - Using engine default (should be male)');
+          // Don't set a specific voice - let the engine use its default
         }
         
-        print('🎙️ FINAL VOICE SET: ${targetVoice['name']} (${targetVoice['locale']})');
-        
-        // Log voice characteristics for debugging
-        String voiceName = targetVoice['name'].toString().toLowerCase();
-        String voiceGender = targetVoice['gender']?.toString().toLowerCase() ?? '';
-        bool isMale = voiceGender.contains('male') || 
-                     voiceName.contains('male') || voiceName.contains('man') ||
-                     voiceName.contains('daniel') || voiceName.contains('oliver') ||
-                     voiceName.contains('james') || voiceName.contains('william') ||
-                     voiceName.contains('david') || voiceName.contains('john');
-        print('Voice is likely male: $isMale (Gender: $voiceGender)');
+        // Additional verification - only if we have a target voice
+        if (targetVoice != null) {
+          String selectedVoiceName = targetVoice['name'].toString().toLowerCase();
+          if (!selectedVoiceName.contains('british') || !selectedVoiceName.contains('male')) {
+            // Try to find the exact British English Male Voice 1
+            var britishMaleVoice1 = voices.where((voice) {
+              String name = voice['name'].toString().toLowerCase();
+              return name.contains('british english male') || 
+                     name.contains('english (uk) male') ||
+                     (name.contains('british') && name.contains('male') && name.contains('1'));
+            }).toList();
+            
+            if (britishMaleVoice1.isNotEmpty) {
+              print('🔄 Found specific British English Male Voice: ${britishMaleVoice1.first['name']}');
+              await _flutterTts.setVoice({
+                'name': britishMaleVoice1.first['name'],
+                'locale': britishMaleVoice1.first['locale']
+              });
+              targetVoice = britishMaleVoice1.first;
+            }
+          }
+          
+          print('🎙️ FINAL VOICE SET: ${targetVoice['name']} (${targetVoice['locale']})');
+          
+          // Log voice characteristics for debugging
+          String voiceName = targetVoice['name'].toString().toLowerCase();
+          String voiceGender = targetVoice['gender']?.toString().toLowerCase() ?? '';
+          bool isMale = voiceGender.contains('male') || 
+                       voiceName.contains('male') || voiceName.contains('man') ||
+                       voiceName.contains('daniel') || voiceName.contains('oliver') ||
+                       voiceName.contains('james') || voiceName.contains('william') ||
+                       voiceName.contains('david') || voiceName.contains('john') ||
+                       voiceName.contains('sfg#male_1');
+          print('Voice is confirmed male: $isMale (Gender: $voiceGender)');
+        }
       }
       
       // Set volume based on connection type
@@ -694,6 +780,11 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
         print('Fallback TTS also failed: $fallbackError');
       }
     }
+  }
+
+  /// Public method to speak any string - can be called from anywhere
+  Future<void> speak(String text) async {
+    await speakAsJarvis(text);
   }
 
   Future<void> _checkBluetoothConnection() async {
@@ -753,14 +844,6 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
     print('No wake word found in: "$normalizedText"');
     // Return empty string if no wake word found (will use original text)
     return '';
-  }
-
-  Future<void> _configureTTSOutput() async {
-    // Use the Jarvis TTS configuration
-    await _configureJarvisTTS();
-    
-    // Additional logging for debugging
-    print('TTS configured with Jarvis voice settings');
   }
 
   Future<void> _findConnectedBluetoothDevice() async {
@@ -1211,86 +1294,125 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
   Future<void> _speakResponse(String response, {bool stopContinuousMode = false}) async {
     setState(() {
       _messages.add({'role': 'assistant', 'text': response});
-      _isSpeaking = true; // Set speaking state immediately
+      _isSpeaking = true;
+      _isTtsActive = true; // Block STT immediately
     });
     
-    print('Starting TTS immediately for response: "$response"');
+    print('🚀 INSTANT TTS for response: "$response"');
     
-    // Configure TTS and start immediately - no delay
-    await _configureTTSOutput();
+    // STOP VOSK IMMEDIATELY to prevent hearing TTS output
+    print('🔇 STOPPING VOSK to prevent TTS echo');
+    _stopVoskListening();
     
-    // Pause Vosk listening during TTS (don't stop completely)
-    if (_isListening) {
-      print('Pausing Vosk during TTS...');
-      // Don't stop Vosk completely, just ignore results during TTS
-    }
-    
-    // Clear any existing timers
-    _listeningTimer?.cancel();
-    _autoStopTimer?.cancel();
-    _silenceTimer?.cancel();
-    
-    // Set TTS completion handler with better synchronization
-    _flutterTts.setCompletionHandler(() async {
-      print('TTS completed, preparing next action...');
-      if (mounted) {
-        setState(() => _isSpeaking = false);
-      }
+    try {
+      // IMMEDIATE TTS START
+      await _flutterTts.stop();
+      await _configureJarvisTTS();
       
-      // Extended delay to prevent TTS echo pickup from speakers
-      await Future.delayed(const Duration(milliseconds: 2000));
+      // Clear any existing timers
+      _listeningTimer?.cancel();
+      _autoStopTimer?.cancel();
+      _silenceTimer?.cancel();
       
-      if (mounted && !_isListening && !_isSpeaking) {
-        if (stopContinuousMode) {
-          // Stop continuous mode, enter wake word waiting mode
-          if (mounted) {
+      // Set TTS completion handler based on mode
+      _flutterTts.setCompletionHandler(() async {
+        print('TTS completed, determining next action...');
+        if (mounted) {
+          setState(() {
+            _isSpeaking = false;
+            _isTtsActive = false; // CRITICAL: Reset TTS state to allow STT
+          });
+        }
+        
+        // Longer delay to ensure TTS audio has completely finished
+        await Future.delayed(const Duration(milliseconds: 2000));
+        
+        if (mounted && !_isSpeaking && !_isTtsActive) {
+          if (stopContinuousMode) {
+            // Stop continuous mode, enter wake word waiting mode
             setState(() {
               _isInContinuousMode = false;
               _waitingForWakeWord = true;
             });
-          }
-          print('Command executed, entering wake word mode...');
-          _startWakeWordListening();
-        } else {
-          // Continue normal conversation mode
-          if (mounted) {
+            print('🛑 Command executed, entering wake word mode...');
+            _startWakeWordListening();
+          } else {
+            // Continue normal conversation mode
             setState(() => _isInContinuousMode = true);
+            print('🎤 RESTARTING VOSK after TTS completion...');
+            await _startPermanentListening(); // Properly restart Vosk
           }
-          print('Continuing conversation mode...');
-          _startListening();
         }
-      }
-    });
-    
-    // Reduced safety timeout
-    _listeningTimer = Timer(const Duration(seconds: 8), () {
-      if (mounted && !_isListening && _isSpeaking) {
-        print('TTS timeout - forcing restart of listening');
-        if (mounted) {
-          setState(() {
-            _isSpeaking = false;
-            if (stopContinuousMode) {
-              _isInContinuousMode = false;
-              _waitingForWakeWord = true;
-              _startWakeWordListening();
-            } else {
-              _isInContinuousMode = true;
-              _startListening();
-            }
-          });
+      });
+      
+      // Safety timeout
+      _listeningTimer = Timer(const Duration(seconds: 8), () {
+        if (mounted && _isSpeaking) {
+          print('TTS timeout - forcing next action');
+          if (mounted) {
+            setState(() {
+              _isSpeaking = false;
+              _isTtsActive = false;
+              if (stopContinuousMode) {
+                _isInContinuousMode = false;
+                _waitingForWakeWord = true;
+                _startWakeWordListening();
+              } else {
+                _isInContinuousMode = true;
+                print('🎤 TIMEOUT: Restarting Vosk after TTS...');
+                _startPermanentListening(); // Properly restart Vosk
+              }
+            });
+          }
         }
+      });
+      
+      // Start TTS immediately
+      await _flutterTts.speak(response);
+      
+    } catch (e) {
+      print('Error in TTS response: $e');
+      // Fallback: reset states and resume appropriate mode
+      if (mounted) {
+        setState(() {
+          _isSpeaking = false;
+          _isTtsActive = false;
+        });
       }
-    });
+      
+      if (stopContinuousMode) {
+        _startWakeWordListening();
+      } else {
+        print('🎤 ERROR FALLBACK: Restarting Vosk...');
+        _startPermanentListening(); // Restart Vosk on error
+      }
+    }
+  }
+
+  // Prevent duplicate speech processing
+  void _processSpeechWithDuplicateCheck(String text) {
+    final now = DateTime.now();
     
-    // Start TTS immediately
-    await speakAsJarvis(response);
+    // Prevent exact duplicate text within 3 seconds
+    if (_lastProcessedText == text && 
+        now.difference(_lastProcessedTime).inSeconds < 3) {
+      debugPrint("🚫 DUPLICATE DETECTED: Skipping '$text' (processed ${now.difference(_lastProcessedTime).inSeconds}s ago)");
+      return;
+    }
+
+    // Update tracking variables
+    _lastProcessedText = text;
+    _lastProcessedTime = now;
+    
+    debugPrint("✅ Processing new speech: '$text'");
+    _handleUserSpeech(text);
   }
 
   Future<void> _handleUserSpeech(String userText) async {
     print('Raw speech input: "$userText"'); // Debug log
     
     // Ignore speech while we're speaking (TTS is active)
-    if (_isSpeaking) {
+    if (_isSpeaking || _isTtsActive) {
       print('Ignoring speech while TTS is active: "$userText"');
       return;
     }
@@ -1372,59 +1494,55 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
       _hasGreeted = true;
     }
     
-    if (mounted) {
-      setState(() {
-        _messages.add({'role': 'assistant', 'text': assistantReply});
-        _isSpeaking = true; // Set speaking state immediately
-      });
-    }
+    // CRITICAL: Set speaking states IMMEDIATELY and STOP VOSK to prevent echo
+    _isSpeaking = true;
+    _isTtsActive = true;
+    
+    print('🚀 INSTANT TTS START: "$assistantReply"');
+    
+    // STOP VOSK IMMEDIATELY to prevent hearing TTS output
+    print('🔇 STOPPING VOSK to prevent TTS echo');
+    _stopVoskListening(); // Stop Vosk completely during TTS
     
     // Add assistant response to conversation history
     _addToConversationHistory('assistant', assistantReply);
     
-    print('Starting TTS immediately for: "$assistantReply"');
+    // Start TTS INSTANTLY with zero delay
+    _flutterTts.stop(); // Stop immediately without await
+    _flutterTts.speak(assistantReply); // Start immediately without await
+    print('🔊 TTS STARTED INSTANTLY WITHOUT DELAYS');
     
-    // Configure TTS and start speaking immediately - no delay
-    await _configureTTSOutput();
-    
-    // Pause Vosk listening during TTS (don't stop completely)
-    if (_isListening) {
-      print('Pausing Vosk during TTS...');
-      // Don't stop Vosk completely, just ignore results during TTS
-    }
-    
-    // Clear any existing timers
-    _listeningTimer?.cancel();
-    _autoStopTimer?.cancel();
-    _silenceTimer?.cancel();
-    
-    // Set TTS completion handler to restart listening with proper synchronization
+    // Configure TTS completion handler for flow continuation
     _flutterTts.setCompletionHandler(() async {
-      print('TTS completed, preparing to restart listening...');
+      print('✅ TTS COMPLETED - Resuming STT listening...');
+      
+      // Reset TTS states
       if (mounted) {
-        setState(() => _isSpeaking = false);
+        setState(() {
+          _isSpeaking = false;
+          _isTtsActive = false; // CRITICAL: Allow STT to resume
+        });
       }
       
-      // Extended delay to prevent TTS echo pickup
+      // Longer delay to ensure TTS audio has completely finished
       await Future.delayed(const Duration(milliseconds: 2000));
       
-      if (mounted && !_isListening && !_isSpeaking) {
-        // Enter continuous mode after Gemini response
-        if (mounted) {
-          setState(() => _isInContinuousMode = true);
-        }
-        print('Restarting listening after TTS completion...');
-        _startListening(); // Restart listening automatically
+      // RESTART VOSK LISTENING after TTS is completely done
+      if (mounted && !_isSpeaking && !_isTtsActive) {
+        setState(() => _isInContinuousMode = true);
+        print('🎤 RESTARTING VOSK after TTS completion');
+        await _startPermanentListening(); // Properly restart Vosk
       }
     });
     
-    // Reduced safety timeout for faster response
-    _listeningTimer = Timer(const Duration(seconds: 8), () {
-      if (mounted && !_isListening && _isSpeaking) {
-        print('TTS timeout - forcing restart of listening');
+    // Safety timeout for main TTS flow
+    _listeningTimer = Timer(const Duration(seconds: 10), () {
+      if (mounted && _isSpeaking) {
+        print('⚠️ MAIN TTS TIMEOUT - Force restarting Vosk');
         if (mounted) {
           setState(() {
             _isSpeaking = false;
+            _isTtsActive = false;
             _isInContinuousMode = true;
           });
         }
@@ -1432,15 +1550,20 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
       }
     });
     
-    // Start TTS immediately
-    await speakAsJarvis(assistantReply);
-    if (_connectedDevice != null) {
-      // Send the response as text via Bluetooth (if supported by the device)
-      // This is a placeholder: actual sending depends on the device's services/characteristics
-      // await _sendTextViaBluetooth(assistantReply);
+    // Update UI after TTS starts (non-blocking)
+    if (mounted) {
+      setState(() {
+        _messages.add({'role': 'assistant', 'text': assistantReply});
+      });
     }
-    _lastWords = '';
-    // Do not call _startListening() here; it will be called after TTS completes
+    
+    // Optional: Send response via Bluetooth if connected
+    if (_connectedDevice != null) {
+      // Placeholder for Bluetooth text transmission
+      print('Could send response via Bluetooth: "$assistantReply"');
+    }
+    
+    print('✅ COMPLETE FLOW: Vosk → Gemini → TTS → (will auto-resume Vosk)');
   }
 
   Future<String> _callGeminiApi(String prompt, {bool isFirst = false}) async {
@@ -1520,95 +1643,100 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
         ],
       ),
       body: SafeArea(
-        child: Column(
+        child: Stack(
           children: [
-            Expanded(
-              child: ListView.builder(
-              reverse: false,
-              padding: const EdgeInsets.all(16),
-              itemCount: _messages.length,
-              itemBuilder: (context, index) {
-                final msg = _messages[index];
-                final isUser = msg['role'] == 'user';
-                return Align(
-                  alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-                  child: Container(
-                    margin: const EdgeInsets.symmetric(vertical: 4),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: isUser ? Colors.blueAccent : Colors.white10,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Text(
-                      msg['text'] ?? '',
-                      style: TextStyle(
-                        color: isUser ? Colors.white : Colors.white70,
-                        fontSize: 16,
-                      ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(vertical: 24),
-            child: Column(
+            // Main content
+            Column(
               children: [
-                GestureDetector(
-                  onTap: _startListening,
-                  child: Container(
-                    width: size.width,
-                    height: 120,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(60),
-                      gradient: LinearGradient(
-                        colors: [
-                          Colors.blue.withOpacity(0.1),
-                          Colors.purple.withOpacity(0.1),
-                        ],
+                Expanded(
+                  child: ListView.builder(
+                  reverse: false,
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _messages.length,
+                  itemBuilder: (context, index) {
+                    final msg = _messages[index];
+                    final isUser = msg['role'] == 'user';
+                    return Align(
+                      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
+                      child: Container(
+                        margin: const EdgeInsets.symmetric(vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: isUser ? Colors.blueAccent : Colors.white10,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: Text(
+                          msg['text'] ?? '',
+                          style: TextStyle(
+                            color: isUser ? Colors.white : Colors.white70,
+                            fontSize: 16,
+                          ),
+                        ),
                       ),
-                    ),
-                    child: Center(
+                    );
+                  },
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Column(
+                  children: [
+                    GestureDetector(
+                      onTap: _startListening,
                       child: Container(
                         width: size.width,
-                        height: 80,
+                        height: 120,
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(40),
-                          color: Colors.black.withOpacity(0.8),
+                          borderRadius: BorderRadius.circular(60),
+                          gradient: LinearGradient(
+                            colors: [
+                              Colors.blue.withOpacity(0.1),
+                              Colors.purple.withOpacity(0.1),
+                            ],
+                          ),
                         ),
-                        child: SiriWaveform.ios9(
-                          options: IOS9SiriWaveformOptions(
+                        child: Center(
+                          child: Container(
+                            width: size.width,
                             height: 80,
-                            showSupportBar: _isListening,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(40),
+                              color: Colors.black.withOpacity(0.8),
+                            ),
+                            child: SiriWaveform.ios9(
+                              options: IOS9SiriWaveformOptions(
+                                height: 80,
+                                showSupportBar: _isListening,
+                              ),
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
+                    const SizedBox(height: 16),
+                    Text(
+                      _getStatusText(),
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _isBluetoothConnected ? '🎧 Bluetooth Connected' : '📱 Phone Speaker',
+                      style: TextStyle(
+                        color: _isBluetoothConnected ? Colors.blue : Colors.grey,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  _getStatusText(),
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  _isBluetoothConnected ? '🎧 Bluetooth Connected' : '📱 Phone Speaker',
-                  style: TextStyle(
-                    color: _isBluetoothConnected ? Colors.blue : Colors.grey,
-                    fontSize: 14,
-                  ),
-                ),
-              ],
+              ),
+            ],
             ),
-          ),
-        ],
+          ],
         ),
       ),
     );

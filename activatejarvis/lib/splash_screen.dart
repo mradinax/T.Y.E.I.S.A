@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'setup_page.dart';
+import 'jarvis_chat_page.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({Key? key}) : super(key: key);
@@ -23,16 +26,47 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
       curve: Curves.easeInOut,
     );
     _controller.forward();
+    
+    // Check if we should navigate after animation
+    _controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        _checkSetupStatus();
+      }
+    });
+  }
+
+  Future<void> _checkSetupStatus() async {
+    // Wait longer to show the splash screen properly
+    await Future.delayed(const Duration(seconds: 3));
+    
+    final prefs = await SharedPreferences.getInstance();
+    bool setupCompleted = prefs.getBool('setup_completed') ?? false;
+    
+    if (setupCompleted) {
+      // Get saved user data and navigate to chat page
+      String userName = prefs.getString('user_name') ?? 'User';
+      String assistantName = prefs.getString('assistant_name') ?? 'Jarvis';
+      
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(
+          builder: (context) => JarvisChatPage(
+            userName: userName,
+            assistantName: assistantName,
+          ),
+        ),
+      );
+    } else {
+      // Navigate to setup page
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (context) => const SetupPage()),
+      );
+    }
   }
 
   @override
   void dispose() {
     _controller.dispose();
     super.dispose();
-  }
-
-  void _goToHome() {
-    Navigator.of(context).pushReplacementNamed('/setup');
   }
 
   @override
@@ -59,7 +93,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                       ),
                       const SizedBox(height: 32),
                       const Text(
-                        'ACTIVATE JARVIS',
+                        'T.Y.E.I.S.A',
                         style: TextStyle(
                           color: Colors.white,
                           fontSize: 32,
@@ -81,30 +115,6 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
                         ),
                       ),
                     ],
-                  ),
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(bottom: 32.0),
-              child: SizedBox(
-                width: 260,
-                height: 48,
-                child: ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(24),
-                    ),
-                  ),
-                  onPressed: _goToHome,
-                  child: const Text(
-                    "Let's Go",
-                    style: TextStyle(
-                      color: Colors.black,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w500,
-                    ),
                   ),
                 ),
               ),
