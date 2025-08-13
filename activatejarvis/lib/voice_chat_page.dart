@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:siri_wave/siri_wave.dart';
 import 'assistant_core.dart';
+import 'setup_page.dart';
 // Removed: import 'package:activatejarvis/secrets/api_keys.dart';
 
 class VoiceChatPage extends StatefulWidget {
@@ -942,12 +943,12 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
     if (_isSpeaking) {
       return 'Speaking...';
     } else if (_isListening) {
-      return 'Always listening... (Vosk)';
+      return 'Always listening...';
     } else if (!_waitingForWakeWord && !_isInContinuousMode) {
       // This indicates STT is completely off (like when any app is opened)
       return 'Come back when you need me';
     } else {
-      return 'Initializing Vosk...';
+      return 'Initializing ...';
     }
   }
 
@@ -1101,6 +1102,57 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
           return success;
         } else {
           await _speakResponse("I couldn't understand who you want to call. Please say something like call mummy or call 123456789", stopContinuousMode: true);
+          return true;
+        }
+      }
+      
+      // Navigation commands - take me to, navigate to, directions to
+      else if (lowerCommand.contains('take me to ') || 
+               lowerCommand.contains('navigate to ') ||
+               lowerCommand.contains('directions to ') ||
+               lowerCommand.contains('drive to ') ||
+               lowerCommand.contains('go to ')) {
+        String destination = _extractNavigationDestination(lowerCommand);
+        if (destination.isNotEmpty) {
+          bool success = await AssistantCore.openGoogleMapsNavigation(destination);
+          responseMessage = success ? 
+            "Opening Google Maps navigation to $destination. Drive safe!" : 
+            "Sorry, I couldn't open navigation to $destination";
+          commandExecuted = true;
+          
+          // Stop all listening when opening navigation
+          if (success) {
+            await _speakResponse(responseMessage, stopContinuousMode: true);
+            await _stopAllListening();
+            return true;
+          }
+        } else {
+          await _speakResponse("I couldn't understand the destination. Please say something like take me to Reva University", stopContinuousMode: true);
+          return true;
+        }
+      }
+      
+      // Show location commands - show me, where is
+      else if (lowerCommand.contains('show me ') || 
+               lowerCommand.contains('where is ') ||
+               lowerCommand.contains('find ') ||
+               lowerCommand.contains('locate ')) {
+        String location = _extractLocationQuery(lowerCommand);
+        if (location.isNotEmpty) {
+          bool success = await AssistantCore.openGoogleMapsLocation(location);
+          responseMessage = success ? 
+            "Showing $location on Google Maps" : 
+            "Sorry, I couldn't find $location on the map";
+          commandExecuted = true;
+          
+          // Stop all listening when opening maps
+          if (success) {
+            await _speakResponse(responseMessage, stopContinuousMode: true);
+            await _stopAllListening();
+            return true;
+          }
+        } else {
+          await _speakResponse("I couldn't understand what location to show. Please say something like show me nearest hospital", stopContinuousMode: true);
           return true;
         }
       }
@@ -1285,6 +1337,63 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
     
     // Remove common words that might interfere
     result = result.replaceAll(' up', '').replaceAll(' now', '').trim();
+    
+    return result;
+  }
+  
+  /// Extract destination from navigation command like "take me to Reva University"
+  String _extractNavigationDestination(String command) {
+    String result = '';
+    
+    if (command.contains('take me to ')) {
+      result = command.split('take me to ')[1].trim();
+    } else if (command.contains('navigate to ')) {
+      result = command.split('navigate to ')[1].trim();
+    } else if (command.contains('directions to ')) {
+      result = command.split('directions to ')[1].trim();
+    } else if (command.contains('drive to ')) {
+      result = command.split('drive to ')[1].trim();
+    } else if (command.contains('go to ')) {
+      result = command.split('go to ')[1].trim();
+    }
+    
+    // Remove common words that might interfere with navigation
+    result = result.replaceAll(' please', '')
+                   .replaceAll(' now', '')
+                   .replaceAll(' from here', '')
+                   .replaceAll(' from current location', '')
+                   .trim();
+    
+    return result;
+  }
+  
+  /// Extract location from "show me" or "where is" commands
+  String _extractLocationQuery(String command) {
+    String result = '';
+    
+    if (command.contains('show me ')) {
+      result = command.split('show me ')[1].trim();
+    } else if (command.contains('where is ')) {
+      result = command.split('where is ')[1].trim();
+    } else if (command.contains('find ')) {
+      result = command.split('find ')[1].trim();
+    } else if (command.contains('locate ')) {
+      result = command.split('locate ')[1].trim();
+    }
+    
+    // Remove common words that might interfere
+    result = result.replaceAll(' on map', '')
+                   .replaceAll(' on the map', '')
+                   .replaceAll(' please', '')
+                   .replaceAll(' for me', '')
+                   .trim();
+    
+    // Handle "nearest" queries
+    if (result.startsWith('nearest ')) {
+      result = result.replaceFirst('nearest ', 'nearest ');
+    } else if (result.startsWith('the nearest ')) {
+      result = result.replaceFirst('the nearest ', 'nearest ');
+    }
     
     return result;
   }
@@ -1619,6 +1728,250 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
   //   // Implement based on your device's Bluetooth service/characteristic
   // }
 
+  /// Show all possible voice commands in a modal dialog
+  void _showVoiceCommands() {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return Dialog(
+          backgroundColor: Colors.transparent,
+          child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.of(context).size.height * 0.8,
+              maxWidth: MediaQuery.of(context).size.width * 0.9,
+            ),
+            decoration: BoxDecoration(
+              color: Colors.black.withOpacity(0.95),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Colors.blue.withOpacity(0.3),
+                width: 1,
+              ),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Header
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        Colors.blue.withOpacity(0.2),
+                        Colors.purple.withOpacity(0.2),
+                      ],
+                    ),
+                    borderRadius: const BorderRadius.only(
+                      topLeft: Radius.circular(20),
+                      topRight: Radius.circular(20),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(
+                        Icons.mic,
+                        color: Colors.white,
+                        size: 24,
+                      ),
+                      const SizedBox(width: 12),
+                      const Text(
+                        'Voice Commands',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 22,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        onPressed: () => Navigator.of(context).pop(),
+                        icon: const Icon(
+                          Icons.close,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                // Command list
+                Flexible(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildCommandCategory(
+                          'Navigation & Maps',
+                          Icons.navigation,
+                          [
+                            'Take me to Reva University',
+                            'Navigate to Bangalore Airport',
+                            'Directions to nearest hospital',
+                            'Show me RCB Stadium',
+                            'Where is Cubbon Park?',
+                            'Find nearest restaurant',
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        _buildCommandCategory(
+                          'Apps & Entertainment',
+                          Icons.apps,
+                          [
+                            'Open YouTube',
+                            'Open YouTube and play music',
+                            'Open Instagram',
+                            'Open WhatsApp',
+                            'Open Spotify',
+                            'Close YouTube',
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        _buildCommandCategory(
+                          'Music & Media',
+                          Icons.music_note,
+                          [
+                            'Play Doraemon on YouTube',
+                            'Search Bohemian Rhapsody on Spotify',
+                            'Play music on YouTube Music',
+                            'Open Netflix',
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        _buildCommandCategory(
+                          'Phone & Contacts',
+                          Icons.phone,
+                          [
+                            'Call Mummy',
+                            'Call 9876543210',
+                            'Phone John',
+                            'Dial emergency',
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        _buildCommandCategory(
+                          'General Conversation',
+                          Icons.chat,
+                          [
+                            'Hey Jarvis, how are you?',
+                            'What\'s the weather like?',
+                            'Tell me a joke',
+                            'What time is it?',
+                            'Good morning Jarvis',
+                          ],
+                        ),
+                        const SizedBox(height: 20),
+                        // Wake words section
+                        Container(
+                          padding: const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: Colors.blue.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.blue.withOpacity(0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons.record_voice_over,
+                                    color: Colors.blue,
+                                    size: 20,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'Wake Words',
+                                    style: TextStyle(
+                                      color: Colors.blue,
+                                      fontSize: 16,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 12),
+                              Text(
+                                'Start commands with: "Hey Jarvis", "OK Jarvis", "Activate Jarvis", or just "Jarvis"',
+                                style: TextStyle(
+                                  color: Colors.white70,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  /// Build a command category section
+  Widget _buildCommandCategory(String title, IconData icon, List<String> commands) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              icon,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              title,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        ...commands.map((command) => Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                width: 4,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Colors.blue.withOpacity(0.7),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  '"$command"',
+                  style: TextStyle(
+                    color: Colors.white70,
+                    fontSize: 14,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        )).toList(),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final size = MediaQuery.of(context).size;
@@ -1637,106 +1990,81 @@ class _VoiceChatPageState extends State<VoiceChatPage> with WidgetsBindingObserv
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.help_outline, color: Colors.white),
+            onPressed: _showVoiceCommands,
+          ),
+          IconButton(
             icon: const Icon(Icons.settings, color: Colors.white),
-            onPressed: widget.onSettings ?? () {},
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(
+                  builder: (context) => const SetupPage(),
+                ),
+              );
+            },
           ),
         ],
       ),
       body: SafeArea(
-        child: Stack(
-          children: [
-            // Main content
-            Column(
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(vertical: 24),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Expanded(
-                  child: ListView.builder(
-                  reverse: false,
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _messages.length,
-                  itemBuilder: (context, index) {
-                    final msg = _messages[index];
-                    final isUser = msg['role'] == 'user';
-                    return Align(
-                      alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(vertical: 4),
-                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        decoration: BoxDecoration(
-                          color: isUser ? Colors.blueAccent : Colors.white10,
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          msg['text'] ?? '',
-                          style: TextStyle(
-                            color: isUser ? Colors.white : Colors.white70,
-                            fontSize: 16,
-                          ),
-                        ),
+                GestureDetector(
+                  onTap: _startListening,
+                  child: Container(
+                    width: size.width * 0.8,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(60),
+                      gradient: LinearGradient(
+                        colors: [
+                          Colors.blue.withOpacity(0.1),
+                          Colors.purple.withOpacity(0.1),
+                        ],
                       ),
-                    );
-                  },
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(vertical: 24),
-                child: Column(
-                  children: [
-                    GestureDetector(
-                      onTap: _startListening,
+                    ),
+                    child: Center(
                       child: Container(
-                        width: size.width,
-                        height: 120,
+                        width: size.width * 0.8,
+                        height: 80,
                         decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(60),
-                          gradient: LinearGradient(
-                            colors: [
-                              Colors.blue.withOpacity(0.1),
-                              Colors.purple.withOpacity(0.1),
-                            ],
-                          ),
+                          borderRadius: BorderRadius.circular(40),
+                          color: Colors.black.withOpacity(0.8),
                         ),
-                        child: Center(
-                          child: Container(
-                            width: size.width,
+                        child: SiriWaveform.ios9(
+                          options: IOS9SiriWaveformOptions(
                             height: 80,
-                            decoration: BoxDecoration(
-                              borderRadius: BorderRadius.circular(40),
-                              color: Colors.black.withOpacity(0.8),
-                            ),
-                            child: SiriWaveform.ios9(
-                              options: IOS9SiriWaveformOptions(
-                                height: 80,
-                                showSupportBar: _isListening,
-                              ),
-                            ),
+                            showSupportBar: _isListening,
                           ),
                         ),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    Text(
-                      _getStatusText(),
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      _isBluetoothConnected ? '🎧 Bluetooth Connected' : '📱 Phone Speaker',
-                      style: TextStyle(
-                        color: _isBluetoothConnected ? Colors.blue : Colors.grey,
-                        fontSize: 14,
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(height: 16),
+                Text(
+                  _getStatusText(),
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _isBluetoothConnected ? '🎧 Bluetooth Connected' : '📱 Phone Speaker',
+                  style: TextStyle(
+                    color: _isBluetoothConnected ? Colors.blue : Colors.grey,
+                    fontSize: 14,
+                  ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
       ),
     );

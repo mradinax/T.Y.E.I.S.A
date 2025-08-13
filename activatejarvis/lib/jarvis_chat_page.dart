@@ -373,22 +373,8 @@ class _JarvisChatPageState extends State<JarvisChatPage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back, color: Colors.white),
-          onPressed: () {
-            if (Navigator.of(context).canPop()) {
-              Navigator.of(context).pop();
-            }
-          },
-        ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings, color: Colors.white),
-            onPressed: () {
-              // Navigate to settings screen
-            },
-          ),
-        ],
+        
+        
       ),
       body: SafeArea(
         child: Stack(

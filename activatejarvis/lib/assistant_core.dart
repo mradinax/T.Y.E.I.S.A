@@ -312,6 +312,78 @@ class AssistantCore {
     }
   }
 
+  /// Opens Google Maps with navigation from current location to destination
+  /// Supports various destination formats like addresses, place names, coordinates
+  static Future<bool> openGoogleMapsNavigation(String destination) async {
+    try {
+      // Clean the destination string
+      final cleanDestination = destination.trim();
+      
+      // Encode the destination for URL
+      final encodedDestination = Uri.encodeComponent(cleanDestination);
+      
+      // Create Google Maps URL for navigation from current location
+      final mapsUrl = 'https://www.google.com/maps/dir/?api=1&destination=$encodedDestination&travelmode=driving';
+      final uri = Uri.parse(mapsUrl);
+      
+      // Try to open Google Maps app first
+      final mapsAppUrl = 'google.navigation:q=$encodedDestination';
+      final mapsAppUri = Uri.parse(mapsAppUrl);
+      
+      if (await canLaunchUrl(mapsAppUri)) {
+        await launchUrl(mapsAppUri, mode: LaunchMode.externalApplication);
+        return true;
+      } else {
+        // Fall back to web version
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          return true;
+        }
+      }
+      
+      throw Exception('Could not launch Google Maps');
+    } catch (e) {
+      print('Error opening Google Maps navigation: $e');
+      return false;
+    }
+  }
+
+  /// Opens Google Maps to show a specific location (without navigation)
+  /// Good for "show me" commands rather than "take me to" commands
+  static Future<bool> openGoogleMapsLocation(String location) async {
+    try {
+      // Clean the location string
+      final cleanLocation = location.trim();
+      
+      // Encode the location for URL
+      final encodedLocation = Uri.encodeComponent(cleanLocation);
+      
+      // Create Google Maps URL for showing location
+      final mapsUrl = 'https://www.google.com/maps/search/?api=1&query=$encodedLocation';
+      final uri = Uri.parse(mapsUrl);
+      
+      // Try to open Google Maps app first
+      final mapsAppUrl = 'geo:0,0?q=$encodedLocation';
+      final mapsAppUri = Uri.parse(mapsAppUrl);
+      
+      if (await canLaunchUrl(mapsAppUri)) {
+        await launchUrl(mapsAppUri, mode: LaunchMode.externalApplication);
+        return true;
+      } else {
+        // Fall back to web version
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+          return true;
+        }
+      }
+      
+      throw Exception('Could not launch Google Maps');
+    } catch (e) {
+      print('Error opening Google Maps location: $e');
+      return false;
+    }
+  }
+
   /// Get package name or URI scheme for common apps
   static String? _getPackageName(String appName) {
     final Map<String, String> commonApps = {
