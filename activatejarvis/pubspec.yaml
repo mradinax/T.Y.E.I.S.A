@@ -77,9 +77,6 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/earbuds.png
-    - assets/jarvis.png
-    - assets/jarvis.gif
     - assets/logo.png
     - assets/mixkit-high-tech-bleep-2521.wav
     - assets/mixkit-interface-option-select-2573.wav
